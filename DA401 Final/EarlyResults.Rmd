@@ -1,0 +1,261 @@
+---
+title: "DA401 Early Results"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Welcome to the early results section of the final project. This project attempts to answer the research question: can arm injuries be predicted and prevented through analysis of pitching metrics that expose indicators of weakness or potential injury?
+
+These early results are not exploratory results. They include the basis for beginning to understand what is not known that should be, and what the next steps should look like. This will only include the results and questions from the early results, NOT anything that was completed for exploratory analysis. Though elements may seem to be exploratory, these results are important to the research question and overall understanding of this report. 
+
+We begin with loading in the individual packages from libraries that will be needed throughout the early results section.
+
+```{r}
+library(dplyr)
+library(kableExtra)
+library(knitr)
+library(ggplot2)
+library(ggthemes)
+library(ggcorrplot)
+library(broom)
+library(kableExtra)
+```
+
+Now that the packages have been loaded in, I am now going to merge all of the individual CSV files so that the NewtForce data is easier to work with and not separated out by player. 
+
+```{r}
+# This sets the working directory to be correct for the location of the files
+files <- list.files(path = "NF Data CSVs", pattern = "\\.csv$", full.names = TRUE)
+
+# This allows each of the CSV files to be merged together for readabiltiy and consistency
+nf_full_data <- files %>%
+  lapply(read.csv, stringsAsFactors = FALSE) %>%
+  bind_rows()
+```
+
+Now that the files have been merged together, I have been curious about this relationship for a long time. I want to know if there is any association between the peak velocity of the pitcher and their stride length. I think it may be possible that the greater the velocity of the player, the greater their stride length because the speed may force them to move further down the mound.
+
+```{r}
+# This allows for the correlation test to be run between player velocity and stride ratio 
+cor.test(nf_full_data$Player.Velo..mph, nf_full_data$Stride.Ratio...., method = "pearson")
+```
+
+From this correlation test, we see some very interesting results. There is more than a large enough N to see a statistically significant difference between the two variables at play. I had thought there may be a stronger positive correlation between the two, however the large DF and the low p-value may offer some insight. It appears that the greater the velocity, the greater the stride length, though this is a weaker association. It shows that it does not hurt to move faster if you want a greater stride, or inversely that a greater stride may help you move faster, but it does not seem entirely necessary considering the results. 
+
+I think this is necessary and worth explaining for the one slide results, so I will make it into a table for better understanding and readability. 
+
+```{r}
+# Same code as above, just for the sake of putting it in a table.
+cor_test <- cor.test(nf_full_data$Player.Velo..mph, nf_full_data$Stride.Ratio...., method = "pearson")
+
+# This creates the table with labels and names
+stats_table <- data.frame(
+  Statistic = c("Pearson's r", "t value", "Degrees of Freedom", "p value", "95% CI Lower", "95% CI Upper"),
+  Value = c(
+    round(cor_test$estimate, 3),
+    round(cor_test$statistic, 3),
+    cor_test$parameter,
+    round(cor_test$p.value, 4),
+    round(cor_test$conf.int[1], 3),
+    round(cor_test$conf.int[2], 3)
+  )
+)
+
+# This will allow the table to be displayed
+# This section will need the kableExtra and knitr packages for organizing into a table
+
+kable(stats_table, caption = "Correlation Test Results: Player Velocity vs. Stride Ratio (NewtForce Data)") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("hover", "condensed", "bordered", "responsive"))
+```
+
+Now that I have my table, I can move on.
+
+
+I am curious about the relationship between these variables. For the sake of the early results, I want to explore the player velocity variable and if it can be predicted by the other variables included within the analysis. I also think this would be helpful to explain to the class for my short presentation, as it gives a good idea of the variables to be working with and one of the methods of statistical analysis that I have chosen. 
+
+```{r}
+# This code creates the multiple regression model, but excludes the categorical variables and other variables irrelevant to this statistical test like date and time. 
+
+modelPlayerVelo <- lm(Player.Velo..mph. ~ . - Last.Name - First.Name - Date - Time, data = nf_full_data)
+summary(modelPlayerVelo)
+
+# This is the tidy model output, broom will be necessary
+modelPlayerVelo_tidy <- tidy(modelPlayerVelo)
+
+# Clean it up: remove intercept, round, rename
+modelPlayerVelo_table <- modelPlayerVelo_tidy |>
+  dplyr::filter(term != "(Intercept)") |>
+  dplyr::mutate(
+    Estimate = round(estimate, 3),
+    `Std. Error` = round(std.error, 3),
+    `t value` = round(statistic, 2),
+    `p value` = round(p.value, 4)
+  ) |>
+  dplyr::select(Term = term, Estimate, `Std. Error`, `t value`, `p value`)
+
+kable(modelPlayerVelo_table, caption = "Multiple Linear Regression Predicting Player Velocity") |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "bordered", "condensed"))
+```
+
+Thankfully, the results are readable in a table format. This will be presented in class on Monday, November 10th. We see something really odd with a very high estimate for acceleration impulse score in seconds, which measures the time it takes to get to peak ground force. This makes sense that there is this overlap, considering it is a time measurement of the metrics included. It is very intruiging that the other variables are not even close to significant in predicting the player velocity, even with a very, very high R-squared of .9998.
+
+
+This model did not satisfy me, even though it went well in class. I want to try and use the other variable, to see if I can predict peak ground force using these other variables. The same process will be used and it will be put into a readable table.
+
+```{r}
+modelPeakGroundForce <- lm(Accel.Impulse..lb.s. ~ . - Last.Name - First.Name - Date - Time, data = nf_full_data)
+summary(modelPeakGroundForce)
+
+# This will use the broom, knitr, and kableExtra packages
+# Tidy model output
+modelPGF_tidy <- tidy(modelPeakGroundForce)
+
+# Clean it up: remove intercept, round, rename
+modelPGF_table <- modelPGF_tidy |>
+  dplyr::filter(term != "(Intercept)") |>
+  dplyr::mutate(
+    Estimate = round(estimate, 3),
+    `Std. Error` = round(std.error, 3),
+    `t value` = round(statistic, 2),
+    `p value` = round(p.value, 4)
+  ) |>
+  dplyr::select(Term = term, Estimate, `Std. Error`, `t value`, `p value`)
+
+kable(modelPGF_table, caption = "Multiple Linear Regression Predicting Acceleration Impulse in Pounds") |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "bordered", "condensed"))
+
+```
+
+
+Now this looks more like a regression! Of course the accel impulse score in seconds is very high, as it is simply taking the time it takes to reach peak force into account. The player velo, which we saw some issues with in the previous regression, also has its issues and is not statistically significant at the 0.05 level. However, all of the other variables appear to be sound. We see that clawback and Yback/Yfront score, along with Ztransfer are actually reducing the force. This makes sense because Y/Z force are not measuring the force being put into the ground, rather they measure the force going towards home plate and into the rubber away from home plate. YZ back/front does however take into account the downward force in conjunction with one another, so that is of course positive. This regression leads us for a need to include the upper half variables to see if we are able to find ideal metrics to avoid injuries. This will be done using the specific dates of injury, the metrics from that day, and the appropriate metrics from non-injury days. This regression model is solid, yet more variables are necessary. 
+
+I am now curious about the relationship between the variables. I should have done this from the very beginning, but the relationships shown from the multiple regressions now has me thinking. It is time to run a correlation heat map to show, in a more readable format than a correlation matrix, the correlations between different variables. 
+
+```{r}
+# This selects only the numeric variables and removes the categorical ones
+nf_numeric <- nf_full_data[, sapply(nf_full_data, is.numeric)]
+
+# We are using Pearsons R
+cor_matrix <- cor(nf_numeric, use = "pairwise.complete.obs", method = "pearson")
+
+# This rounds the values so they are interpretable
+cor_matrix <- round(cor_matrix, 2)
+
+# The WSJ theme is just a bonus, but this code creates the heat map itself.
+ggcorrplot(
+  cor_matrix,
+  hc.order = TRUE,            
+  type = "full",             
+  lab = TRUE,                
+  lab_size = 3,
+  outline.col = "white",
+  colors = c("#B22222", "white", "#1E90FF"),
+  title = "Heatmap of NewtForce Variables",
+  ggtheme = ggthemes::theme_wsj(base_size = 11)
+)
+```
+
+The heat map shows the correlations between variables. The majority of variables show not significantly strong correlations, however we do see the one to one correlation between player velocity and acceleration impulse score measured in seconds. This makes sense, as both are measured in time and the force is very similar to speed in how it is measured using the NewtForce mound. From here, it is shown that there many more relationships which can be explored without bias because of the lack of significantly large correlation coefficients between variables. 
+
+Finally, we are ready to show off some of the methods. I would like to start out with time series. I will be using player 1 as my first example to show the average impulse acceleration, or the peak ground force, between each throwing session. 
+
+
+```{r}
+# This section will use the packages dplyr, ggplot2, and ggthemes
+
+# This takes in player 1's data 
+
+player_data <- nf_full_data %>%
+  filter(First.Name == "Beau", Last.Name == "Chaney")
+
+# This groups by date, so that we can see the average by each session
+
+session_summary <- player_data %>%
+  group_by(Date) %>%
+  summarise(Average_Accel_Impulse = mean(Accel.Impulse..lb.s., na.rm = TRUE)) %>%
+  arrange(Date)
+
+# This graphs the data with a line to show the differences more clearly than just points
+
+ggplot(session_summary, aes(x = Date, y = Average_Accel_Impulse, group = 1)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_point(size = 2, color = "darkred") +
+  labs(
+    title = "Average Acceleration Impulse Across Throwing Sessions",
+    x = "Date",
+    y = "Pounds (lbs)"
+  ) +
+  theme_wsj(base_size = 9) +
+  theme(
+    axis.title.x = element_text(),
+    axis.title.y = element_text()
+  ) +
+  annotate(
+    "text",
+    x = -Inf, y = -Inf,               
+    label = "Figure 1.",
+    hjust = -0.1, vjust = -0.8,       
+    size = 3,
+    fontface = "italic"
+  )
+```
+
+From this time series, there are interesting trends between sessions. The peaks and valleys of these results indicate potential changes in body emphasis, meaning more stress was placed on the upper half on 8/25/2025 as compared to 7/18/2025. With the upper body data, we will be able to show if there is a parallel relationship or a mirror effect between upper and lower half stress. Further, if the lower half has less stress will the upper body have more, with the inverse being true as well. This is interesting and offers a great deal of interpretation for future results and future plans. 
+
+We now move in to the last method, which offers some overlap between correlations and regression relationships. Though it seems exploratory, the bivariate scatterplot shows the relationship between two different kinds of variables; an upper half metric and a lower half metric. 
+
+```{r}
+# This reads in both the NewtForce data and the ArmCare data
+nf_data <- read.csv("merged_data.csv")
+arm_data <- read.csv("ArmCareApp.csv")
+
+# This taks the average of the peak ground force for NewtForce
+nf_summary <- nf_data %>%
+  group_by(First.Name, Last.Name) %>%
+  summarise(
+    Avg_Accel_Impulse = mean(Accel.Impulse..lb.s., na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# This takes into account the average strength score in weight from ArmCare data
+arm_summary <- arm_data %>%
+  select(First.Name, Last.Name, Average.Weight) %>%
+  distinct()
+
+# This joins the two datasets by player to create a new data set
+player_compare <- nf_summary %>%
+  inner_join(arm_summary, by = c("First.Name", "Last.Name"))
+
+# This takes into account the correlation metric between the two variables for bivariate analysis
+cor_test <- cor.test(player_compare$Average.Weight, player_compare$Avg_Accel_Impulse)
+
+# This adds the label to the graph
+cor_label <- paste0("r = ", round(cor_test$estimate, 2),
+                    ", p = ", format.pval(cor_test$p.value, digits = 2, eps = .001))
+
+# This creates the scatterplot itself in the WSJ theme with labels, placing the coefficients at the bottom right of the graph
+ggplot(player_compare, aes(x = Average.Weight, y = Avg_Accel_Impulse)) +
+  geom_point(color = "darkred", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "steelblue", linewidth = 0.7) +
+  labs(
+    title = "Average ArmCare Weight vs. NewtForce Acceleration Impulse by Player",
+    x = "Average ArmCare Weight (lbs)",
+    y = "Average Acceleration Impulse (lbs·s)"
+  ) +
+  annotate("text",
+           x = Inf, y = -Inf,
+           label = cor_label,
+           hjust = 1.1, vjust = -1.2,
+           size = 3.5, fontface = "italic") +
+  theme_wsj(base_size = 9) +
+  theme(
+    axis.title.x = element_text(),
+    axis.title.y = element_text()
+  )
+```
+
+Despite the low N that this scatterplot takes into account, we see some interesting results. This is what we would expect to see; as the stress and weight on the arm increases, the peak ground force decreases. In simpler terms, the more stress on the arm the less stress on the legs. Because of the smaller N, we would be able to look more directly at the reason for these outliers and their individual metrics, however they could just be statistical anomalies. This would be interesting to consider with a greater N, or with more variables to include within this scatterplot. In that way, with more upper body variables and honing in on the key lower body variables, we will be able to create a LASSO or logistic regression to see if these metrics would lead to a specific threshold that is going to be indicative of injury or not. This concludes the early results section. 

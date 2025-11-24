@@ -1,0 +1,674 @@
+---
+title: "First Draft"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This first section includes the initial inclusion of the People dataset from Sean Lahman's baseball database, and the cleaning of the dataset. 
+
+```{r}
+library(dplyr)
+library(Lahman)
+Lahman_Player_Info <- People %>%
+  mutate(finalGame = as.Date(finalGame)) %>% 
+  filter(
+    birthYear >= 1970,                    
+    is.na(finalGame) | finalGame >= as.Date("2015-01-01") 
+    
+# Ensure that only players in 2015 are included
+# I only want a few of these variables, not all of them
+    
+  ) %>% 
+  mutate(nameFull = paste(nameFirst, nameLast)) %>%    
+  select(nameFull, weight, height, bats, throws)
+```
+
+Now that this part is done, I can read in the Tommy John Surgery list.
+
+```{r}
+library(readr)
+TJ_Surgery_List <- read_csv("TJ_Surgery_List.csv")
+```
+
+This will now only select the variables of choice. 
+
+```{r}
+# I do not want all of the variables, so we can get rid of the other ones that will just take up space. 
+
+TJ_Surgery_List <- TJ_Surgery_List %>%
+  select(
+    "Player",
+    "TJ Surgery Date",
+    "Team",
+    "Level",
+    "Position",
+    "Throws",
+    "Return Date (same level)",
+    "Recovery Time (months)"
+  )
+```
+
+
+I have to change the dataset so that each of the pitchers with multiple surgeries take up one row, instead of being duplicates. I also want to have it so I can merge these datasets together to make it easier on myself down the road. 
+
+```{r}
+TJ_Surgery_List_Numbered <- TJ_Surgery_List %>%
+  arrange(Player, `TJ Surgery Date`) %>%        
+  group_by(Player) %>%
+  mutate(Surgery_Number = row_number()) %>%
+  ungroup()
+
+
+# I need to make sure that each player has one row, no one has multiple rows
+library(tidyr)
+
+TJ_Surgery_Wide <- TJ_Surgery_List_Numbered %>%
+  pivot_wider(
+    id_cols = Player,
+    names_from = Surgery_Number,
+    values_from = c(
+      `TJ Surgery Date`,
+      Team,
+      Level,
+      Position,
+      Throws,
+      `Return Date (same level)`,
+      `Recovery Time (months)`
+    ),
+    names_glue = "{.value}_Surgery{Surgery_Number}"
+  )
+
+# Now I have to merge these two datasets together, TJ and Lahman
+
+Merged_Data <- Lahman_Player_Info %>%
+  left_join(TJ_Surgery_Wide, by = c("nameFull" = "Player"))
+
+Merged_Data <- Merged_Data %>%
+  mutate(
+    Num_Surgeries = rowSums(!is.na(select(., starts_with("TJ Surgery Date_Surgery"))))
+  ) %>%
+  relocate(Num_Surgeries, .after = throws)
+
+# I want a binomial variable that measures if you had surgery or not
+Merged_Data <- Merged_Data %>%
+  mutate(
+    hadSurgery = ifelse(Num_Surgeries > 0, 1, 0)
+  ) %>%
+  relocate(hadSurgery, .after = Num_Surgeries)
+
+# I want to add BMI, I think it will be a major indicator. 
+Merged_Data <- Merged_Data %>%
+  mutate(
+    BMI = round((weight / (height^2)) * 703, 2)
+  ) %>%
+  relocate(BMI, .after = height)
+```
+
+Alright, now that the second sort of data cleaning is done, since the NewtForce was done for early results, I can move on to the hard part of Baseball Savant. I have to read in the very large CSV file and clean it a bit. 
+
+```{r}
+Baseball_Savant_Metrics <- read.csv("PitchersFullBaseballSavant.csv")
+
+# I need the names to match between the datasets
+Baseball_Savant_Metrics <- Baseball_Savant_Metrics %>%
+  mutate(
+    last_name..first_name = gsub("^\\s+|\\s+$", "",
+                                 sub("(.*),\\s*(.*)", "\\2 \\1", last_name..first_name))
+  ) %>%
+  rename(Player_Name = last_name..first_name)
+
+# I do not need the individual ID if I have the name
+Baseball_Savant_Metrics <- Baseball_Savant_Metrics %>%
+  select(-player_id)
+```
+
+That wasn't as bad as I had originally thought, so now I can work just to clean the NewtForce data now that I have individual metrics like throwing hand, height, weight, and max fastball velocity. 
+
+```{r}
+nf_weights_full_data <- read.csv("merged_data.csv")
+nf_weights_full_data <- nf_weights_full_data %>%
+  mutate(FullName = paste(First.Name, Last.Name)) %>%
+  select(-First.Name, -Last.Name) %>%
+  relocate(FullName, .before = Date)
+
+```
+
+
+Now that I have it a bit cleaner, I realize that the names are messed up. Someone really needs to figure out their data collection process. This should not be my problem. 
+
+```{r}
+nf_weights_full_data <- nf_weights_full_data %>%
+  mutate(
+    FullName = FullName %>%
+      gsub("Rehab$", "", .) %>%     # remove "Rehab" at end
+      gsub(" Rehab$", "", .) %>%    # remove " Rehab" at end
+      trimws()                      # remove trailing spaces left behind
+  )
+
+
+# Another important step I came to realize was necessary.
+# I need to make sure that each session has an average so that I can analyze with time series
+
+Averaged_Player_Date <- nf_weights_full_data %>%
+  filter(FullName %in% c(
+    "Ben Hanley",
+    "Jaden Bakhit",
+    "Beau Chaney",
+    "Drew Oerther",
+    "Luke Pappano",
+    "Boyd Westerfield",
+    "Jake Gaerke",
+    "Rhys Canan",
+    "Tucker Wilburn"
+  )) %>%
+  group_by(FullName, Date) %>%
+  summarise(
+    across(
+      c(
+        `Accel.Impulse..lb.s.`,
+        `Accel.Impulse.Score..sec.`,
+        `Clawback..sec.`,
+        `Player.Velo..mph.`,
+        `Stride.Ratio....`,
+        `Y.Back.Score..lb.lb.`,
+        `Y.Front.Score..lb.lb.`,
+        `YZ.Back.Score..lb.lb.`,
+        `YZ.Front.Score..lb.lb.`,
+        `Z.Transfer..sec.`
+      ),
+      ~ mean(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+```
+
+Once again I need to just run one more check to make sure all of this cleaning worked for the different data sets. One I had to create, the other was inherently created for me to download. 
+
+```{r}
+NewtForce_Players_Info <- read.csv("NewtForce_Players_Info.csv")
+NewtForce_Players_Info <- NewtForce_Players_Info %>%
+  mutate(
+    player_name = case_when(
+      player_name == "Jaden Bahkit" ~ "Jaden Bakhit",
+      player_name == "Rhys Cannon"  ~ "Rhys Canan",
+      TRUE ~ player_name
+    )
+  )
+```
+
+I finally can work to merge the two together now that they should, in theory, line up and merge together. 
+
+```{r}
+Merged_NewtForce <- Averaged_Player_Date %>%
+  left_join(NewtForce_Players_Info,
+            by = c("FullName" = "player_name"))
+
+Merged_NewtForce <- Merged_NewtForce %>%
+  mutate(Date = as.Date(Date, format = "%m/%d/%Y")) %>%
+  arrange(FullName, Date)
+```
+
+Now I got another idea to create a data set that takes the TJ surgery list and includes only pitchers that have had surgery. 
+
+```{r}
+Merged_Data_Surgery_Yes_Pitchers <- Merged_Data %>%
+  filter(
+    hadSurgery == 1,
+    Position_Surgery1 == "P"
+  )
+```
+
+
+## Results
+
+Of course, I found one more thing. Now I am merging the Surgery info into the Baseball Savant metrics. I haven't figured out how I want to do this, but I have a feeling I can find some overlap. 
+
+```{r}
+Pitcher_Surgery_Info <- Merged_Data %>%
+  select(nameFull, BMI, throws, Num_Surgeries, hadSurgery)
+
+Baseball_Savant_BMI_Included <- Baseball_Savant_Metrics %>%
+  left_join(
+    Pitcher_Surgery_Info,
+    by = c("Player_Name" = "nameFull")
+  )
+```
+
+Yet another snag in the data. I have to get rid of the accents and periods in the names like AJ, or the Dominican names like Ramirez. 
+
+```{r}
+library(stringi)
+
+Baseball_Savant_Metrics <- Baseball_Savant_Metrics %>%
+  mutate(
+    Player_Name_clean = Player_Name %>%
+      stri_trans_general("Latin-ASCII") %>%   # remove accents
+      gsub("\\.", "", .) %>%                  # remove ALL periods
+      trimws()                                # remove whitespace
+  )
+
+Merged_Data <- Merged_Data %>%
+  mutate(
+    nameFull_clean = nameFull %>%
+      stri_trans_general("Latin-ASCII") %>%   # remove accents
+      gsub("\\.", "", .) %>%                  # remove ALL periods
+      trimws()
+  )
+
+
+Pitcher_Surgery_Info <- Merged_Data %>%
+  select(nameFull_clean, BMI, throws, Num_Surgeries, hadSurgery)
+
+
+Baseball_Savant_BMI_Included <- Baseball_Savant_Metrics %>%
+  left_join(
+    Pitcher_Surgery_Info,
+    by = c("Player_Name_clean" = "nameFull_clean")
+  )
+
+Baseball_Savant_BMI_Included <- Baseball_Savant_BMI_Included %>%
+  filter(!is.na(BMI))
+
+Baseball_Savant_BMI_Included <- Baseball_Savant_BMI_Included %>%
+  filter(year != 2025)
+
+table(is.na(Baseball_Savant_BMI_Included$BMI))
+```
+
+I am now ready to make the three scatterplot comparison visuals. I hope these give me something I can use and aren't all worthless. This data cleaning was a lot. My commenting has been awful. 
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Correlation: BMI and Velo
+nf_cor <- cor.test(
+  NewtForce_Players_Info$BMI,
+  NewtForce_Players_Info$top_fb_velocity,
+  method = "pearson"
+)
+
+print(nf_cor)
+
+# Linear model
+nf_model <- lm(top_fb_velocity ~ BMI, data = NewtForce_Players_Info)
+summary(nf_model)
+
+
+Savant_LatestYear <- Baseball_Savant_BMI_Included %>%
+  filter(!is.na(BMI), !is.na(fastball_avg_speed)) %>%          
+  group_by(Player_Name) %>%
+  filter(year == max(year, na.rm = TRUE)) %>%                  
+  summarise(
+    BMI = first(BMI),                                          
+    fb_velocity = max(fastball_avg_speed, na.rm = TRUE),       
+    hadSurgery = first(hadSurgery),                            
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(fb_velocity))                               
+
+# Correlation
+bs_cor <- cor.test(
+  Savant_LatestYear$BMI,
+  Savant_LatestYear$fb_velocity,
+  method = "pearson"
+)
+
+print(bs_cor)
+
+# Linear model
+bs_model <- lm(fb_velocity ~ BMI, data = Savant_LatestYear)
+summary(bs_model)
+
+global_x_range <- range(
+  NewtForce_Players_Info$BMI,
+  Savant_LatestYear$BMI,
+  na.rm = TRUE
+)
+
+global_y_range <- range(
+  NewtForce_Players_Info$top_fb_velocity,
+  Savant_LatestYear$fb_velocity,
+  na.rm = TRUE
+)
+
+
+Savant_LatestYear_surg1 <- Savant_LatestYear %>%
+  filter(hadSurgery == 1)
+
+Savant_LatestYear_surg0 <- Savant_LatestYear %>%
+  filter(hadSurgery == 0)
+
+nf_plot <- ggplot(NewtForce_Players_Info, aes(x = BMI, y = top_fb_velocity)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  coord_cartesian(xlim = global_x_range, ylim = global_y_range) +
+  labs(
+    title = "BMI vs Top Fastball Velocity (NewtForce - All Pitchers)",
+    x = "BMI",
+    y = "Top Fastball Velocity (mph)"
+  ) +
+  theme_minimal()
+
+bs_plot_surg1 <- ggplot(Savant_LatestYear_surg1, aes(x = BMI, y = fb_velocity)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  coord_cartesian(xlim = global_x_range, ylim = global_y_range) +
+  labs(
+    title = "BMI vs Top Fastball Velocity (Savant - Had Surgery)",
+    x = "BMI",
+    y = "Fastball Velocity (mph)"
+  ) +
+  theme_minimal()
+
+bs_plot_surg0 <- ggplot(Savant_LatestYear_surg0, aes(x = BMI, y = fb_velocity)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  coord_cartesian(xlim = global_x_range, ylim = global_y_range) +
+  labs(
+    title = "BMI vs Top Fastball Velocity (Savant - No Surgery)",
+    x = "BMI",
+    y = "Fastball Velocity (mph)"
+  ) +
+  theme_minimal()
+
+nf_plot
+bs_plot_surg1
+bs_plot_surg0
+
+```
+
+
+Perfect, now that I have the scatterplots I can work to compare the groups statistically. I don't think it'll do any good to use the NF one. I think that one is pointless. 
+```{r}
+
+Savant_group_surg1 <- Savant_LatestYear_surg1 %>%
+  transmute(
+    group = "Savant_Surgery",
+    BMI,
+    velo = fb_velocity
+  )
+
+Savant_group_surg0 <- Savant_LatestYear_surg0 %>%
+  transmute(
+    group = "Savant_NoSurgery",
+    BMI,
+    velo = fb_velocity
+  )
+
+Combined_groups <- bind_rows(NF_group, Savant_group_surg1, Savant_group_surg0)
+
+interaction_model <- lm(velo ~ BMI * group, data = Combined_groups)
+summary(interaction_model)
+
+```
+Good. 
+
+Now I can use the merged NF data to expand on my early results time series. I want to do it for all nine guys and make a visual that I can show the comparison of the guys across their sessions. 
+
+```{r}
+
+Merged_NewtForce <- Merged_NewtForce %>%
+  mutate(Date = as.Date(Date))
+
+
+players_of_interest <- c(
+  "Ben Hanley",
+  "Jaden Bakhit",
+  "Beau Chaney",
+  "Drew Oerther",
+  "Luke Pappano",
+  "Boyd Westerfield",
+  "Jake Gaerke",
+  "Rhys Canan",
+  "Tucker Wilburn"
+)
+
+
+Accel_Time_Data <- Merged_NewtForce %>%
+  filter(FullName %in% players_of_interest) %>%
+  group_by(FullName, Date) %>%
+  summarise(
+    Accel_Impulse_lb_s = mean(`Accel.Impulse..lb.s.`, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    FullName = factor(FullName, levels = players_of_interest)
+  )
+
+accel_plot <- ggplot(Accel_Time_Data, aes(x = Date, y = Accel_Impulse_lb_s)) +
+  geom_line() +
+  geom_point(size = 2) +
+  facet_wrap(~ FullName, ncol = 2) + 
+  labs(
+    title = "Average Peak Force Across NewtForce Sessions",
+    x = "Session Date",
+    y = "Accel Impulse (lb·s)"
+  ) +
+  scale_x_date(date_labels = "%b %Y") +  
+  theme_bw(base_size = 14) +            
+  theme(
+    strip.text = element_text(face = "bold"),       
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    panel.spacing = unit(0.7, "lines")              
+  )
+
+accel_plot
+
+```
+Let's go!
+
+Now time for a better heat map. First one for early results did not get graded well so want to slim it down and make sure it is readable and usable. 
+
+```{r}
+library(tibble)
+
+
+corr_data <- Baseball_Savant_BMI_Included %>%
+  select(
+    hadSurgery,
+    Num_Surgeries,
+    p_formatted_ip,
+    n,
+    arm_angle,
+    fastball_avg_speed,
+    breaking_avg_speed,
+    offspeed_avg_speed
+  ) %>%
+  select(where(is.numeric))   
+
+corr_matrix <- cor(corr_data, use = "pairwise.complete.obs")
+
+
+corr_df <- as.data.frame(corr_matrix) %>%
+  rownames_to_column(var = "Var1") %>%
+  pivot_longer(
+    cols = -Var1,
+    names_to = "Var2",
+    values_to = "Correlation"
+  )
+
+heatmap_corr <- ggplot(corr_df, aes(x = Var2, y = Var1, fill = Correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", Correlation)), size = 3) +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limits = c(-1, 1),
+    name = "r"
+  ) +
+  labs(
+    title = "Correlation Heatmap: Surgery, IP, Pitch Count, Arm Angle, and Pitch Velocities",
+    x = "",
+    y = ""
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    panel.grid = element_blank(),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  )
+
+heatmap_corr
+
+```
+
+Much better than early results.
+
+The bitter end. Now I want to make a LASSO model that predicts injury. Based on the correlation... I feel like this might actually end up being decently strong. I really hope that this is a significant analysis. I think I will go RF or just a log regression if not... LASSO for now. 
+
+
+```{r}
+library(glmnet)
+library(caret)
+library(pROC)
+library(ggthemes)
+
+df <- Baseball_Savant_BMI_Included %>%
+  transmute(
+    hadSurgery = hadSurgery,
+    BMI = BMI,
+    n = n,
+    p_formatted_ip = as.numeric(p_formatted_ip),
+    arm_angle = arm_angle,
+    fastball_avg_speed = fastball_avg_speed,
+    breaking_avg_speed = breaking_avg_speed,
+    offspeed_avg_speed = offspeed_avg_speed
+  ) %>%
+  filter(!is.na(hadSurgery))
+
+for (col in names(df)) {
+  if (col != "hadSurgery") {
+    df[[col]][is.na(df[[col]])] <- median(df[[col]], na.rm = TRUE)
+  }
+}
+
+df$hadSurgery <- as.numeric(df$hadSurgery)
+
+set.seed(123)
+train_idx <- createDataPartition(df$hadSurgery, p = 0.8, list = FALSE)
+train_df <- df[train_idx, ]
+test_df  <- df[-train_idx, ]
+
+x_train <- model.matrix(hadSurgery ~ ., data = train_df)[, -1]
+y_train <- train_df$hadSurgery
+
+x_test <- model.matrix(hadSurgery ~ ., data = test_df)[, -1]
+y_test <- test_df$hadSurgery
+
+set.seed(123)
+cv_lasso <- cv.glmnet(
+  x_train, y_train,
+  family = "binomial",
+  alpha = 1,
+  nfolds = 10,
+  type.measure = "auc"
+)
+
+lambda_min <- cv_lasso$lambda.min
+
+lasso_model <- glmnet(
+  x_train, y_train,
+  family = "binomial",
+  alpha = 1,
+  lambda = lambda_min
+)
+
+coef_lasso <- as.matrix(coef(lasso_model))
+
+coef_df <- data.frame(
+  variable = rownames(coef_lasso),
+  coefficient = coef_lasso[, 1],
+  row.names = NULL
+) %>%
+  filter(variable != "(Intercept)") %>%
+  arrange(desc(abs(coefficient)))
+
+prob_test <- predict(lasso_model, newx = x_test, type = "response")[, 1]
+roc_obj <- roc(response = y_test, predictor = prob_test)
+auc_val <- as.numeric(auc(roc_obj))
+
+
+coef_df <- coef_df %>%
+  mutate(
+    coefficient = round(coefficient, 3),
+    AUC = round(auc_val, 3)
+  )
+
+coef_df  
+
+roc_plot <- ggplot(
+  data.frame(
+    fpr = rev(roc_obj$specificities),
+    tpr = rev(roc_obj$sensitivities)
+  ),
+  aes(x = 1 - fpr, y = tpr)
+) +
+  geom_line(size = 1.2, color = "steelblue") +
+  geom_abline(linetype = "dashed") +
+  labs(
+    title = paste0("ROC Curve - LASSO Logistic Regression (AUC = ", round(auc_val, 3), ")"),
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  ) +
+  theme_wsj(base_size = 14)
+
+roc_plot
+ggsave("lasso_roc_curve.png", roc_plot, width = 6, height = 6, dpi = 300)
+
+coef_plot <- coef_df %>%
+  ggplot(aes(x = reorder(variable, coefficient), y = coefficient)) +
+  geom_bar(stat = "identity", fill = "firebrick", alpha = 0.8) +
+  coord_flip() +
+  labs(
+    title = "LASSO Coefficients\n(Predicting Tommy John Surgery)",
+    x = "",
+    y = "Coefficient (Standardized)"
+  ) +
+  theme_wsj(base_size = 14)
+
+coef_plot
+ggsave("lasso_coefficients.png", coef_plot, width = 7, height = 5, dpi = 300)
+
+library(gt)
+
+# Adding a table so I can read it better
+simple_table <- final_table %>%
+  select(variable, coefficient, AUC) %>%
+  mutate(
+    coefficient = round(coefficient, 3),
+    AUC = round(AUC, 3)
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "LASSO Coefficients and Model AUC"
+  ) %>%
+  fmt_number(columns = c(coefficient, AUC), decimals = 3) %>%
+  tab_options(
+    table.border.top.style = "solid",
+    table.border.bottom.style = "solid",
+    table_body.border.top.style = "solid",
+    table_body.border.bottom.style = "solid",
+    column_labels.border.bottom.style = "solid",
+    data_row.padding = px(4)
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "black", weight = px(1)),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "black", weight = px(1)),
+    locations = cells_column_labels()
+  )
+
+simple_table
+```
+Let's go! First draft bang!
